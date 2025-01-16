@@ -1,67 +1,74 @@
-import requests
+import aiohttp
+import asyncio
 import time
 
-# Replace with your personal access token
-TOKEN = "PAST-YOUR-GITHUB-API-TOKEN"
-
-# GitHub API URL for the authenticated user's following list
+TOKEN = "YOUR-GITHUB-API-TOKEN-KEY"
 FOLLOWING_URL = "https://api.github.com/user/following"
 RATE_LIMIT_URL = "https://api.github.com/rate_limit"
 
-# Set up the headers with your token
 headers = {
     "Authorization": f"token {TOKEN}",
     "Accept": "application/vnd.github.v3+json"
 }
 
-def check_rate_limit():
-    """Check remaining rate limit and sleep if necessary."""
-    response = requests.get(RATE_LIMIT_URL, headers=headers)
-    if response.status_code == 200:
-        data = response.json()
-        remaining = data['resources']['core']['remaining']
-        reset_time = data['resources']['core']['reset']
+async def check_rate_limit(session):
+    """Check rate limit asynchronously."""
+    async with session.get(RATE_LIMIT_URL, headers=headers) as response:
+        data = await response.json()
+        remaining = data['rate']['remaining']
+        reset_time = data['rate']['reset']
         
         if remaining == 0:
-            # Wait for the rate limit to reset
             wait_time = reset_time - time.time()
-            print(f"Rate limit exceeded, waiting for {int(wait_time // 60)} minutes.")
-            time.sleep(wait_time + 5)  # Sleep for the reset time, with a buffer
-    else:
-        print(f"Error checking rate limit: {response.status_code}")
+            print(f"Rate limit exceeded. Waiting for {int(wait_time // 60)} minutes.")
+            await asyncio.sleep(wait_time + 5)
 
-def get_following():
-    """Fetch the list of users you are currently following."""
-    response = requests.get(FOLLOWING_URL, headers=headers)
-    
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Error fetching following list: {response.status_code}")
-        return []
-
-def unfollow_user(username):
-    """Unfollow a user by their username."""
-    check_rate_limit()  # Check rate limit before making each unfollow request
+async def unfollow_user(session, username):
+    """Unfollow a user by username asynchronously."""
+    await check_rate_limit(session)
     unfollow_url = f"{FOLLOWING_URL}/{username}"
-    response = requests.delete(unfollow_url, headers=headers)
-    
-    if response.status_code == 204:
-        print(f"Successfully unfollowed {username}")
-    else:
-        print(f"Error unfollowing {username}: {response.status_code}")
+    async with session.delete(unfollow_url, headers=headers) as response:
+        if response.status == 204:
+            print(f"Successfully unfollowed {username}")
+        else:
+            print(f"Error unfollowing {username}: {response.status}, {await response.json()}")
 
-def unfollow_all():
-    """Unfollow all users you are following."""
-    following = get_following()
-    
-    if not following:
-        print("You are not following anyone.")
-        return
+async def get_following(session, page=1):
+    """Fetch the list of users currently being followed asynchronously."""
+    params = {'page': page, 'per_page': 100}
+    async with session.get(FOLLOWING_URL, headers=headers, params=params) as response:
+        if response.status == 200:
+            return await response.json()
+        else:
+            print(f"Error fetching following list: {response.status}, {await response.json()}")
+            return []
 
-    for user in following:
-        username = user["login"]
-        unfollow_user(username)
+async def unfollow_all():
+    """Unfollow all users asynchronously."""
+    async with aiohttp.ClientSession() as session:
+        page = 1
+        following = []
+        
+        # Fetch all followed users with pagination
+        while True:
+            users = await get_following(session, page)
+            if not users:
+                break
+            following.extend(users)
+            page += 1
+
+        if not following:
+            print("You are not following anyone.")
+            return
+        
+        # Unfollow users concurrently
+        tasks = [unfollow_user(session, user["login"]) for user in following]
+        await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
-    unfollow_all()
+    try:
+        asyncio.run(unfollow_all())
+    except KeyboardInterrupt:
+        print("Operation canceled by user.")
+    except Exception as e:
+        print(f"An error occurred: {e}")
